@@ -2,24 +2,12 @@ import { NavigationContainer, useNavigation } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { Image, Text, TouchableOpacity, View } from "react-native";
 import CameraScreen from "./CameraScreen";
-import { useEffect } from "react";
-import { loadTensorflowModel, useTensorflowModel } from "react-native-fast-tflite";
 
 const App = () => {
-
-
 
   function HomeScreen() {
     const navigation = useNavigation();
 
-    const model = useTensorflowModel(require('./assets/1.tflite'));
-    console.log('Modal State ===>', model.state);
-
-    const imagePath = require('./assets/dog_bike_car.jpg');
-
-    const source = Image.resolveAssetSource(imagePath);
-
-    const uri = source.uri;
 
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
