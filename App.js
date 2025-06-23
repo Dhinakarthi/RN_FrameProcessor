@@ -14,7 +14,7 @@ const App = () => {
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
         <TouchableOpacity
           style={{ padding: 10, backgroundColor: 'black', borderRadius: 5, paddingHorizontal: 30 }}
-          onPress={() => navigation.navigate('FrameCamera')}
+          onPress={() => navigation.navigate('Camera')}
         >
           <Text style={{ color: 'white', fontSize: 14 }}>Start</Text>
         </TouchableOpacity>
@@ -29,7 +29,7 @@ const App = () => {
       <Stack.Navigator initialRouteName="Home">
         <Stack.Screen name="Home" component={HomeScreen} />
         <Stack.Screen name="Camera" component={CameraScreen} />
-        <Stack.Screen name="FrameCamera" component={FrameCamera}/>
+        {/* <Stack.Screen name="FrameCamera" component={FrameCamera}/> */}
       </Stack.Navigator>
     </NavigationContainer>
   )

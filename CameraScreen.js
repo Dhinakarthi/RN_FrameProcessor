@@ -9,7 +9,7 @@ import { useTensorflowModel } from "react-native-fast-tflite";
 const CameraScreen = () => {
     const { hasPermission, requestPermission } = useCameraPermission();
     const device = useCameraDevice('back');
-    const modal = useTensorflowModel(require('./assets/sample.tflite'));
+    const modal = useTensorflowModel(require('./assets/EasyOCR_EasyOCRRecognizer.tflite'));
 
     const cameraRef = useRef();
 
