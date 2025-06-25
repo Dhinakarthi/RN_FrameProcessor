@@ -16,73 +16,131 @@ const App = () => {
     const recognizer = useTensorflowModel(require('./assets/EasyOCR_EasyOCRRecognizer.tflite'));
     const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,- /_".split('');
 
-    const pickImageFromGallery = async () => {
-      try {
-        const result = await launchImageLibrary({ mediaType: 'photo' });
-        if (!result.assets || result.assets.length === 0) return;
+    const runDetector = async (imageUri) => {
+      console.log("🔍 Starting detector...");
 
-        const image = result.assets[0];
-        console.log("Picked image:", image.uri);
+      const [, , detH, detW] = detector.model.inputs[0].shape;
+      console.log(`🖼️ Detector input size: ${detW} x ${detH}`);
 
-        // 📏 DETECTOR input shape
-        const [, , detectorHeight, detectorWidth] = detector.model.inputs[0].shape;
+      const resized = await ImageResizer.createResizedImage(imageUri, detW, detH, 'JPEG', 100, 0);
+      console.log("📏 Resized image URI:", resized.uri);
 
-        const resizedImage = await ImageResizer.createResizedImage(
-          image.uri, detectorWidth, detectorHeight, 'JPEG', 100, 0
-        );
-        const imageRgb = await rgb.convertToRGB(resizedImage.uri); // flat RGB array
+      const rgbArray = await rgb.convertToRGB(resized.uri);
+      console.log("🎨 Raw RGB array length:", rgbArray.length);
 
-        const chw = [[], [], []];
-        for (let i = 0; i < imageRgb.length; i += 3) {
-          chw[0].push((imageRgb[i] - 127) / 255);     // R
-          chw[1].push((imageRgb[i + 1] - 127) / 255); // G
-          chw[2].push((imageRgb[i + 2] - 127) / 255); // B
+      // Safe normalization with diagnostics
+      const inputTensor = new Float32Array(rgbArray.length);
+      let nonZeroCount = 0;
+      for (let i = 0; i < rgbArray.length; i++) {
+        const val = rgbArray[i];
+        const norm = Math.min(1, Math.max(0, val / 255));
+        inputTensor[i] = norm;
+        if (val > 5) nonZeroCount++;
+      }
+
+      console.log(`📊 Normalized tensor shape: [1, 3, ${detH}, ${detW}]`);
+      console.log("📊 Sample normalized values:", Object.fromEntries(inputTensor.slice(0, 6).entries()));
+      console.log(`🧪 Non-zero RGB count: ${nonZeroCount} / ${rgbArray.length}`);
+
+      // Run detector
+      const output = await detector.model.run([inputTensor]);
+      const outputArr = Array.isArray(output) ? output[0] : Object.values(output)[0];
+      const [_, outH, outW, outC] = detector.model.outputs[0].shape;
+
+      console.log("📤 Detector output shape:", [outH, outW, outC]);
+      console.log("📤 Output tensor length:", outputArr.length);
+
+      // Thresholds – Adjust for debug
+      const TEXT_THRESHOLD = 0.5;
+      const LINK_THRESHOLD = 0.5;
+
+      const textMask = [], linkMask = [];
+      let textTrueCount = 0, linkTrueCount = 0;
+      let scoreMin = Infinity, scoreMax = -Infinity;
+      let linkMin = Infinity, linkMax = -Infinity;
+
+      for (let i = 0; i < outputArr.length; i += outC) {
+        const rawScore = outputArr[i];
+        const rawLink = outputArr[i + 1];
+
+        const score = 1 / (1 + Math.exp(-rawScore)); // sigmoid
+        const link = 1 / (1 + Math.exp(-rawLink));
+
+        scoreMin = Math.min(scoreMin, score);
+        scoreMax = Math.max(scoreMax, score);
+        linkMin = Math.min(linkMin, link);
+        linkMax = Math.max(linkMax, link);
+
+        const textVal = score > TEXT_THRESHOLD;
+        const linkVal = link > LINK_THRESHOLD;
+
+        if (textVal) textTrueCount++;
+        if (linkVal) linkTrueCount++;
+
+        textMask.push(textVal);
+        linkMask.push(linkVal);
+
+        if (i < 20) {
+          const idx = i / outC;
+          console.log(`[#${idx}] raw: (${rawScore.toFixed(3)}, ${rawLink.toFixed(3)}) | sigm: (${score.toFixed(3)}, ${link.toFixed(3)})`);
         }
+      }
 
-        const detectorInput = Float32Array.from(chw.flat());
-        const detectorOutput = await detector.model.run([detectorInput]);
+      console.log(`🔥 Score range: ${scoreMin.toFixed(3)} - ${scoreMax.toFixed(3)}`);
+      console.log(`🔥 Link range: ${linkMin.toFixed(3)} - ${linkMax.toFixed(3)}`);
+      console.log("✅ textMask sample:", textMask.slice(0, 10));
+      console.log("✅ linkMask sample:", linkMask.slice(0, 10));
+      console.log("✅ textMask true count:", textTrueCount);
+      console.log("✅ linkMask true count:", linkTrueCount);
 
-        const [, outputHeight, outputWidth, outputChannels] = detector.model.outputs[0].shape;
-        console.log("Detector output shape:", [outputHeight, outputWidth, outputChannels]);
+      return {
+        textMask,
+        linkMask,
+        outH,
+        outW
+      };
+    };
 
-        // Optional: Simulated detection points
-        const outputTensor = detectorOutput[0];
-        const topScores = [];
-        for (let y = 0; y < outputHeight; y++) {
-          for (let x = 0; x < outputWidth; x++) {
-            const idx = (y * outputWidth + x) * outputChannels;
-            const score = outputTensor[idx]; // assuming score is in channel 0
-            if (score > 0.5) {
-              topScores.push({ x, y, score });
-            }
-          }
+
+    const runRecognizer = async (originalImageUri, textMask, outH, outW) => {
+      console.log("🐞 runRecognizer() called");
+
+      const boxes = extractBoundingBoxes(textMask, outW, outH);
+      console.log("🐞 Boxes found:", boxes.length, boxes);
+
+      if (boxes.length === 0) {
+        console.warn("⚠️ No text regions found.");
+        return [];
+      }
+
+      const recognizedTexts = [];
+      const [, , recH, recW] = recognizer.model.inputs[0].shape;
+      const [, timeSteps, numClasses] = recognizer.model.outputs[0].shape;
+
+      for (const [i, box] of boxes.entries()) {
+        console.log(`🐞 Cropping box #${i}:`, box);
+
+        const cropped = await ImageResizer.createResizedImage(
+          originalImageUri, recW, recH, 'JPEG', 100, 0,
+          undefined, false, {
+          mode: 'cover',
+          onlyScaleDown: false,
+          offset: { x: box.x, y: box.y },
+          size: { width: box.width, height: box.height }
         }
-
-        topScores.sort((a, b) => b.score - a.score);
-        const top = topScores.slice(0, 5);
-        console.log("Top detection points (x, y, score):", top);
-
-        // 👁️ RECOGNIZER input shape
-        const [, , recognizerHeight, recognizerWidth] = recognizer.model.inputs[0].shape;
-
-        const fakeCropped = await ImageResizer.createResizedImage(
-          image.uri, recognizerWidth, recognizerHeight, 'JPEG', 100, 0
         );
 
-        const rgbGray = await rgb.convertToRGB(fakeCropped.uri);
-        const gray = rgbToGrayscale(rgbGray);
-        const grayNormalized = gray.map(v => (v - 127) / 255);
-        const recognizerInput = Float32Array.from(grayNormalized);
+        const rgbArray = await rgb.convertToRGB(cropped.uri);
+        const grayArray = rgbToGrayscale(rgbArray);
+        const normalized = grayArray.map(v => (v - 127) / 255);
+        const inputTensor = Float32Array.from(normalized);
 
-        const recognizerOutput = await recognizer.model.run([recognizerInput]);
-        const output = recognizerOutput[0]; // shape: [1, T, C] → flat array
-
-        const [, timeSteps, numClasses] = recognizer.model.outputs[0].shape;
+        const recognizerOutput = await recognizer.model.run([inputTensor]);
+        const output = recognizerOutput[0];
 
         const predictions = [];
         for (let t = 0; t < timeSteps; t++) {
-          let maxProb = -Infinity;
-          let maxIndex = 0;
+          let maxProb = -Infinity, maxIndex = 0;
           for (let c = 0; c < numClasses; c++) {
             const val = output[t * numClasses + c];
             if (val > maxProb) {
@@ -94,22 +152,92 @@ const App = () => {
         }
 
         const deduped = predictions.filter((v, i, arr) => v !== 0 && (i === 0 || v !== arr[i - 1]));
-        const recognizedText = deduped.map(i => alphabet[i - 1] || '').join('');
-        console.log("✅ Recognized Text:", recognizedText);
+        const decoded = deduped.map(i => alphabet[i - 1] || '').join('');
+        console.log(`🐞 Box #${i} result:`, decoded);
 
+        recognizedTexts.push(decoded);
+      }
+
+      console.log("🎉 Final recognized texts:", recognizedTexts);
+      return recognizedTexts;
+    };
+
+    const pickImageFromGallery = async () => {
+      console.log("📷 pickImageFromGallery called");
+      try {
+        const result = await launchImageLibrary({ mediaType: 'photo' });
+        if (!result.assets || result.assets.length === 0) {
+          console.warn("❌ No image selected");
+          return;
+        }
+
+        const image = result.assets[0];
+        console.log("📸 Picked image:", image.uri);
+
+        const detectorResult = await runDetector(image.uri);
+        const recognizedTexts = await runRecognizer(image.uri, detectorResult.textMask, detectorResult.outH, detectorResult.outW);
+
+        console.log("✅ OCR Result:", recognizedTexts.join("\n"));
       } catch (error) {
-        console.error("OCR error:", error);
+        console.error("❌ Error during OCR:", error);
       }
     };
+
+    function reshapeMask(mask, width, height) {
+      const result = [];
+      for (let y = 0; y < height; y++) {
+        result[y] = [];
+        for (let x = 0; x < width; x++) {
+          result[y][x] = mask[y * width + x] ? 1 : 0;
+        }
+      }
+      return result;
+    }
+
+    function floodFill(mask, visited, x, y, width, height, blob) {
+      const queue = [[x, y]];
+      while (queue.length) {
+        const [cx, cy] = queue.pop();
+        if (cx < 0 || cy < 0 || cx >= width || cy >= height) continue;
+        if (visited[cy][cx] || !mask[cy][cx]) continue;
+        visited[cy][cx] = true;
+        blob.push([cx, cy]);
+        queue.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
+      }
+    }
+
+    function extractBoundingBoxes(mask, width, height, minArea = 10) {
+      console.log("🐞 extractBoundingBoxes called");
+      const binaryMask = reshapeMask(mask, width, height);
+      const visited = Array.from({ length: height }, () => Array(width).fill(false));
+      const boxes = [];
+
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          if (binaryMask[y][x] && !visited[y][x]) {
+            const blob = [];
+            floodFill(binaryMask, visited, x, y, width, height, blob);
+            if (blob.length < minArea) continue;
+            const xs = blob.map(([x]) => x), ys = blob.map(([, y]) => y);
+            boxes.push({
+              x: Math.min(...xs),
+              y: Math.min(...ys),
+              width: Math.max(...xs) - Math.min(...xs) + 1,
+              height: Math.max(...ys) - Math.min(...ys) + 1
+            });
+          }
+        }
+      }
+
+      console.log("🐞 Total boxes extracted:", boxes.length);
+      return boxes;
+    }
 
     function rgbToGrayscale(rgbArray) {
       const gray = [];
       for (let i = 0; i < rgbArray.length; i += 3) {
-        const r = rgbArray[i];
-        const g = rgbArray[i + 1];
-        const b = rgbArray[i + 2];
-        const grayscale = 0.2989 * r + 0.5870 * g + 0.1140 * b;
-        gray.push(grayscale);
+        const r = rgbArray[i], g = rgbArray[i + 1], b = rgbArray[i + 2];
+        gray.push(0.2989 * r + 0.5870 * g + 0.1140 * b);
       }
       return gray;
     }
@@ -118,7 +246,10 @@ const App = () => {
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
         <TouchableOpacity
           style={{ padding: 10, backgroundColor: 'black', borderRadius: 5, paddingHorizontal: 30 }}
-          onPress={() => navigation.navigate('Camera')}
+          onPress={() => {
+            console.log("🔁 Navigating to Camera screen");
+            navigation.navigate('Camera');
+          }}
         >
           <Text style={{ color: 'white', fontSize: 14 }}>Start</Text>
         </TouchableOpacity>
