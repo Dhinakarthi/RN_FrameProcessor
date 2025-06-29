@@ -7,6 +7,7 @@ import { launchImageLibrary } from 'react-native-image-picker';
 import ImageResizer from '@bam.tech/react-native-image-resizer';
 import * as rgb from 'react-native-image-to-rgb';
 import { useTensorflowModel } from "react-native-fast-tflite";
+import MainScreen from './MainScreen';
 
 const App = () => {
   function HomeScreen() {
@@ -274,9 +275,10 @@ const App = () => {
 
   return (
     <NavigationContainer>
-      <Stack.Navigator initialRouteName="Home">
+      <Stack.Navigator initialRouteName="main">
         <Stack.Screen name="Home" component={HomeScreen} />
         <Stack.Screen name="Camera" component={CameraScreen} />
+        <Stack.Screen name='main' component={MainScreen} />
       </Stack.Navigator>
     </NavigationContainer>
   );
