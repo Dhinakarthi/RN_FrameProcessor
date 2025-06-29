@@ -140,6 +140,12 @@ const MainScreen = () => {
             det_shape,
             det_dtype,
         );
+
+        console.log('Data length:', inputTensor.data.length);
+        console.log('Data:', Array.from(inputTensor.data.slice(0, 10)));
+        console.log("Shape", inputTensor.shape);
+        console.log('Type', inputTensor.type);
+        console.log('resizedSize', resizedSize);
     };
 
     const pickImageFromGallery = async () => {
