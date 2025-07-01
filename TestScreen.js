@@ -104,6 +104,65 @@ const TestScreen = () => {
         return [finalData, [targetW, targetH]];
     }
 
+    function sigmoid(x) {
+        return 1 / (1 + Math.exp(-x));
+    }
+
+    function postprocessScoreLink(rawMaps, modelOutputShape, textThreshold = 0.7, linkThreshold = 0.4) {
+        if (!rawMaps || !modelOutputShape) {
+            throw new Error("Missing rawMaps or model output shape");
+        }
+
+        const [_, H, W, C] = modelOutputShape;
+
+        if (C !== 2) {
+            throw new Error(`Expected 2 channels, got ${C}`);
+        }
+
+        const size = H * W;
+        const combinedMask = new Uint8Array(size);
+
+        let minScore = Infinity, maxScore = -Infinity;
+        let minLink = Infinity, maxLink = -Infinity;
+
+        for (let i = 0; i < size; i++) {
+            const score = rawMaps[i * 2];
+            const link = rawMaps[i * 2 + 1];
+
+            minScore = Math.min(minScore, score);
+            maxScore = Math.max(maxScore, score);
+            minLink = Math.min(minLink, link);
+            maxLink = Math.max(maxLink, link);
+        }
+
+        const useSigmoidScore = minScore < 0 || maxScore > 1;
+        const useSigmoidLink = minLink < 0 || maxLink > 1;
+
+        for (let i = 0; i < size; i++) {
+            const s = useSigmoidScore ? sigmoid(rawMaps[i * 2]) : rawMaps[i * 2];
+            const l = useSigmoidLink ? sigmoid(rawMaps[i * 2 + 1]) : rawMaps[i * 2 + 1];
+
+            combinedMask[i] = (s > textThreshold || l > linkThreshold) ? 1 : 0;
+        }
+
+        return {
+            mask: combinedMask,
+            width: W,
+            height: H,
+        };
+    }
+
+    function reshapeMaskTo2D(mask, width, height) {
+        const mask2D = [];
+        for (let y = 0; y < height; y++) {
+            const row = mask.slice(y * width, (y + 1) * width);
+            mask2D.push(Array.from(row));
+        }
+        return mask2D;
+    }
+
+
+
     const runModal = async (inputTensor) => {
         // Fix: model expects inputTensor in an array
         const result = await detector.model.run([inputTensor]);
@@ -151,6 +210,20 @@ const TestScreen = () => {
 
             } else {
                 console.log("⚠️ Output (raw):", output);
+            }
+
+            const rawMaps = output[0][1]
+
+            const modelOutputShape = detector.model.outputs[0].shape;
+
+            const { mask, width, height } = postprocessScoreLink(rawMaps, modelOutputShape);
+
+            const mask2D = reshapeMaskTo2D(mask, width, height);
+
+            // Optional: Pretty print the first 5 rows
+            console.log("🧾 Combined mask preview:");
+            for (let i = 0; i < Math.min(5, mask2D.length); i++) {
+                console.log(mask2D[i].join(" "));
             }
 
         } catch (error) {
